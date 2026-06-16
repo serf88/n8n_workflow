@@ -1,0 +1,187 @@
+{
+  "name": "Housekeeping Task Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 10,
+              "minute": 0
+            }
+          ]
+        }
+      },
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT room_number, guest_name FROM bookings WHERE checkout_date = CURRENT_DATE"
+      },
+      "name": "Get Today's Checkouts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": "Postgres_Connection_Hotel"
+      }
+    },
+    {
+      "parameters": {},
+      "name": "IF Bookings Exist",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "conditions": {
+        "number": [
+          {
+            "value1": "={{$items(\"Get Today's Checkouts\").length}}",
+            "operation": "larger",
+            "value2": 0
+          }
+        ]
+      }
+    },
+    {
+      "parameters": {},
+      "name": "Split Bookings",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "parameters": {
+        "batchSize": 1
+      }
+    },
+    {
+      "parameters": {
+        "message": "Ciao, la camera {{$json[\"room_number\"]}} è pronta per la pulizia. Ospite: {{$json[\"guest_name\"]}}. Grazie!"
+      },
+      "name": "Prepare SMS Message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "from": "+1234567890",
+        "to": "={{$json[\"housekeeping_phone\"]}}",
+        "message": "={{$json[\"message\"]}}"
+      },
+      "name": "Send SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1250, 300],
+      "credentials": {
+        "twilioApi": "Twilio_API_Creds"
+      }
+    },
+    {
+      "parameters": {},
+      "name": "No Bookings",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [650, 450]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "SHEET_ID",
+        "range": "Errors!A1",
+        "values": [
+          [
+            "={{$now.toISOString()}}",
+            "Error sending SMS",
+            "={{$json[\"error\"]}}"
+          ]
+        ]
+      },
+      "name": "Log Error",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [1250, 450],
+      "credentials": {
+        "googleSheetsOAuth2": "Google_Sheets_Creds"
+      }
+    }
+  ],
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Get Today's Checkouts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today's Checkouts": {
+      "main": [
+        [
+          {
+            "node": "IF Bookings Exist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Bookings Exist": {
+      "main": [
+        [
+          {
+            "node": "Split Bookings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Bookings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Bookings": {
+      "main": [
+        [
+          {
+            "node": "Prepare SMS Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare SMS Message": {
+      "main": [
+        [
+          {
+            "node": "Send SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
