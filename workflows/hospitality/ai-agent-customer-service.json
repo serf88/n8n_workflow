@@ -1,0 +1,278 @@
+{
+  "name": "Hotel Cruise Como — AI Agent Customer Service 24/7",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start-trigger",
+      "name": "Start",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hotel-cruise-chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-incoming",
+      "name": "Webhook — Incoming Message",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [400, 300],
+      "notes": "Riceve messaggi da WhatsApp (Twilio), Telegram e Web Widget. Payload atteso: { channel, sender_id, sender_name, message, timestamp }"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"channel\"]}}",
+              "operation": "equal",
+              "value2": "whatsapp"
+            }
+          ]
+        }
+      },
+      "id": "route-channel",
+      "name": "Router — Channel",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [620, 300],
+      "notes": "Smista il messaggio in base al canale: whatsapp / telegram / web"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "guests",
+        "where": {
+          "values": [
+            {
+              "column": "channel_id",
+              "value": "={{$json[\"sender_id\"]}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lookup-guest",
+      "name": "PostgreSQL — Lookup Guest",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [840, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Cerca l'ospite nel DB usando sender_id. Restituisce nome, preferences, storico soggiorni."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"message\"].toLowerCase()}}",
+              "operation": "contains",
+              "value2": "check-in"
+            }
+          ]
+        }
+      },
+      "id": "faq-matcher",
+      "name": "FAQ Matcher — Hotel Cruise",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [1060, 300],
+      "notes": "Controlla se il messaggio corrisponde a una FAQ predefinita: check-in, checkout, WiFi, ristorante, parcheggio, attività Como, breakfast, late checkout"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "faq_response",
+              "value": "={{$json[\"message\"].toLowerCase().includes('check-in') ? 'Il check-in è dalle 14:00. Per il check-in anticipato, contattaci entro le 10:00. Trovi le istruzioni digitali nell\\'email di conferma prenotazione!' : $json[\"message\"].toLowerCase().includes('wifi') ? 'La password WiFi è: HotelCruise2024. Rete: HotelCruse_Guest. Disponibile in tutte le aree dell\\'hotel!' : $json[\"message\"].toLowerCase().includes('ristorante') ? 'Il nostro ristorante è aperto: Colazione 7:00-10:30 | Cena 19:00-22:30. Prenotazione consigliata: chiedi a noi via chat!' : $json[\"message\"].toLowerCase().includes('parcheggio') ? 'Parcheggio convenzionato a 200m: Parcheggio Valduce, tariffa speciale ospiti €8/giorno. Vi forniremo il pass alla reception.' : $json[\"message\"].toLowerCase().includes('lago') || $json[\"message\"].toLowerCase().includes('como') ? 'Attività consigliate: Tour del Lago in battello (prenotazione in reception), Villa del Balbianello, Bellagio, escursioni Monte Brunate con funicolare. Possiamo organizzare transfer privato!' : 'null'}}"
+            }
+          ]
+        }
+      },
+      "id": "faq-static-responses",
+      "name": "FAQ Static Responses",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1280, 180],
+      "notes": "Risposta immediata senza consumo API per le FAQ più frequenti: check-in, WiFi, ristorante, parcheggio, attività Como"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Sei l'assistente virtuale 24/7 di Hotel Cruise Como, un elegante hotel sul Lago di Como con 35 camere. Rispondi in modo cordiale, professionale e in italiano (o nella lingua del cliente). \n\nINFORMAZIONI HOTEL:\n- Check-in: 14:00 | Check-out: 11:00\n- Ristorante: Colazione 7:00-10:30 | Cena 19:00-22:30\n- WiFi: HotelCruise_Guest | Password: disponibile alla reception\n- Parcheggio convenzionato: Parcheggio Valduce €8/giorno\n- Attività: tour lago, escursioni, transfer privato\n- SPA: disponibile su prenotazione 9:00-20:00\n- Room service: 7:00-23:00\n\nOSPITE ATTUALE:\nNome: {{$node['PostgreSQL — Lookup Guest'].json.first_name || 'Gentile Ospite'}}\nPreferenze note: {{$node['PostgreSQL — Lookup Guest'].json.preferences || 'nessuna'}}\nSoggiorni precedenti: {{$node['PostgreSQL — Lookup Guest'].json.total_stays || 0}}\n\nSe non conosci la risposta o la richiesta richiede azione staff (manutenzione, reclami urgenti, richieste speciali), di' che passerai la richiesta allo staff e usa il tag [ESCALATE]."
+            },
+            {
+              "role": "user",
+              "content": "={{$json[\"message\"]}}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500
+        }
+      },
+      "id": "openai-agent",
+      "name": "OpenAI GPT-4o — AI Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1280, 420],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-hotel-cruise",
+          "name": "OpenAI Hotel Cruise"
+        }
+      },
+      "notes": "Genera risposta AI per domande fuori FAQ. Include context ospite (nome, preferenze, soggiorni precedenti). Se [ESCALATE] → trigger notifica staff."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"choices\"][0][\"message\"][\"content\"]}}",
+              "operation": "contains",
+              "value2": "[ESCALATE]"
+            }
+          ]
+        }
+      },
+      "id": "check-escalation",
+      "name": "Check Escalation Flag",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1500, 420],
+      "notes": "Se la risposta contiene [ESCALATE], notifica lo staff tramite Telegram/email e risponde all'ospite che verrà ricontattato a breve."
+    },
+    {
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_STAFF_CHAT_ID}}",
+        "text": "🚨 ESCALATION richiesta da {{$node['Webhook — Incoming Message'].json.sender_name}} ({{$node['Webhook — Incoming Message'].json.channel}})\n\nMessaggio: {{$node['Webhook — Incoming Message'].json.message}}\n\nRisposta AI suggerita: {{$json[\"choices\"][0][\"message\"][\"content\"].replace('[ESCALATE]','').trim()}}\n\nRispondi direttamente al cliente entro 5 minuti.",
+        "additionalFields": {}
+      },
+      "id": "notify-staff-telegram",
+      "name": "Telegram — Notify Staff",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1720, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-hotel-cruise-staff",
+          "name": "Telegram Bot Hotel Cruise Staff"
+        }
+      },
+      "notes": "Notifica immediata al gruppo staff su Telegram quando l'AI non è in grado di risolvere autonomamente."
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "interactions",
+        "columns": "guest_id,channel,message_in,message_out,escalated,confidence_flag,created_at",
+        "additionalFields": {}
+      },
+      "id": "log-interaction",
+      "name": "PostgreSQL — Log Interaction",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1720, 540],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Persiste ogni interazione nel DB per training, analytics e audit. Input: guest_id, channel, messaggio in/out, flag escalation."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"ok\", \"reply\": \"{{$json['final_reply']}}\"}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1940, 420],
+      "notes": "Risponde al webhook con il messaggio da inviare all'ospite. Il frontend/adapter lo recapita sul canale giusto."
+    },
+    {
+      "parameters": {
+        "subject": "Errore AI Agent Hotel Cruise",
+        "message": "Si è verificato un errore nel workflow AI Agent.\n\nErrore: {{$json[\"error\"]}}\nTimestamp: {{$now}}\nCanale: {{$node['Webhook — Incoming Message'].json.channel}}\nMittente: {{$node['Webhook — Incoming Message'].json.sender_id}}",
+        "options": {}
+      },
+      "id": "error-handler",
+      "name": "Error Handler — Email Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1940, 620],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-hotel-cruise",
+          "name": "SMTP Hotel Cruise"
+        }
+      },
+      "notes": "Fallback: in caso di errore critico, invia email alert al team tecnico Agentico."
+    }
+  ],
+  "connections": {
+    "Webhook — Incoming Message": {
+      "main": [[{ "node": "Router — Channel", "type": "main", "index": 0 }]]
+    },
+    "Router — Channel": {
+      "main": [[{ "node": "PostgreSQL — Lookup Guest", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Lookup Guest": {
+      "main": [[{ "node": "FAQ Matcher — Hotel Cruise", "type": "main", "index": 0 }]]
+    },
+    "FAQ Matcher — Hotel Cruise": {
+      "main": [
+        [{ "node": "FAQ Static Responses", "type": "main", "index": 0 }],
+        [{ "node": "OpenAI GPT-4o — AI Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "FAQ Static Responses": {
+      "main": [[{ "node": "PostgreSQL — Log Interaction", "type": "main", "index": 0 }]]
+    },
+    "OpenAI GPT-4o — AI Response": {
+      "main": [[{ "node": "Check Escalation Flag", "type": "main", "index": 0 }]]
+    },
+    "Check Escalation Flag": {
+      "main": [
+        [{ "node": "Telegram — Notify Staff", "type": "main", "index": 0 }],
+        [{ "node": "PostgreSQL — Log Interaction", "type": "main", "index": 0 }]
+      ]
+    },
+    "Telegram — Notify Staff": {
+      "main": [[{ "node": "PostgreSQL — Log Interaction", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Log Interaction": {
+      "main": [[{ "node": "Webhook Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "error-handler"
+  },
+  "staticData": null,
+  "tags": ["hospitality", "AI-agent", "hotel-cruise", "customer-service", "whatsapp", "telegram"],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1.0.0"
+}
