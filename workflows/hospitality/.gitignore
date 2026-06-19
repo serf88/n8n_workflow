@@ -1,0 +1,46 @@
+# ═══════════════════════════════════════════════════════════
+# Hotel Cruise Como — .gitignore
+# MAI committare questi file su GitHub!
+# ═══════════════════════════════════════════════════════════
+
+# Variabili ambiente con segreti
+.env
+*.env
+!.env.example
+
+# n8n data locale
+.n8n/
+n8n_data/
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Editor
+.vscode/settings.json
+.idea/
+*.iml
+
+# Logs
+*.log
+logs/
+
+# Test output
+test-results/
+coverage/
+
+# Backup
+*.bak
+*.backup
+*.sql.gz
