@@ -1,0 +1,470 @@
+{
+  "name": "Hotel Cruise Como — Booking Automation Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hotel-cruise-booking",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-booking",
+      "name": "Webhook — New Booking",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 400],
+      "notes": "Riceve prenotazioni da Booking.com, Airbnb, Expedia, sito proprietario. Payload normalizzato: { source, booking_id, guest_name, guest_email, guest_phone, checkin_date, checkout_date, room_type, special_requests, dietary_restrictions, total_amount }"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "normalized_source",
+              "value": "={{$json[\"source\"] || 'direct'}}"
+            },
+            {
+              "name": "booking_ref",
+              "value": "={{$json[\"booking_id\"] || 'HCC-' + $now.toFormat('yyyyMMdd') + '-' + Math.random().toString(36).substr(2,6).toUpperCase()}}"
+            },
+            {
+              "name": "nights",
+              "value": "={{Math.ceil((new Date($json[\"checkout_date\"]) - new Date($json[\"checkin_date\"])) / (1000*60*60*24))}}"
+            },
+            {
+              "name": "guest_email_lower",
+              "value": "={{$json[\"guest_email\"].toLowerCase().trim()}}"
+            }
+          ]
+        }
+      },
+      "id": "normalize-booking",
+      "name": "Normalize Booking Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [460, 400],
+      "notes": "Normalizza i dati provenienti da canali diversi (Booking.com, Airbnb, Expedia) in formato unico. Calcola notti e genera ref interna."
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "guests",
+        "where": {
+          "values": [
+            {
+              "column": "email",
+              "value": "={{$json[\"guest_email_lower\"]}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "check-existing-guest",
+      "name": "PostgreSQL — Check Existing Guest",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [680, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Verifica se l'ospite esiste già nel CRM. Se sì → UPDATE. Se no → INSERT nuovo profilo."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json[\"id\"] !== undefined ? 1 : 0}}",
+              "operation": "equal",
+              "value2": 1
+            }
+          ]
+        }
+      },
+      "id": "guest-exists-check",
+      "name": "Guest Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 400],
+      "notes": "Branch: ospite esistente vs. nuovo ospite"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "guests",
+        "updateKey": "email",
+        "columns": "total_stays,last_stay_date,updated_at",
+        "additionalFields": {}
+      },
+      "id": "update-guest-crm",
+      "name": "PostgreSQL — Update Repeat Guest",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1120, 280],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Ospite già nel CRM: aggiorna total_stays++, last_stay_date, eventuali nuove preferenze."
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "guests",
+        "columns": "first_name,last_name,email,phone,channel_id,source,dietary_restrictions,preferences,total_stays,created_at",
+        "additionalFields": {}
+      },
+      "id": "insert-new-guest",
+      "name": "PostgreSQL — Insert New Guest",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1120, 520],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Nuovo ospite: crea profilo completo nel CRM con tutti i dati disponibili dalla prenotazione."
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "bookings",
+        "columns": "booking_ref,guest_id,source,checkin_date,checkout_date,room_type,nights,total_amount,special_requests,dietary_restrictions,status,created_at",
+        "additionalFields": {}
+      },
+      "id": "insert-booking",
+      "name": "PostgreSQL — Insert Booking",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1340, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Inserisce la prenotazione nel DB centrale. Status iniziale: CONFIRMED."
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": "public",
+        "table": "rooms",
+        "where": {
+          "values": [
+            {
+              "column": "room_type",
+              "value": "={{$node['Webhook — New Booking'].json.room_type}}"
+            },
+            {
+              "column": "status",
+              "value": "available"
+            }
+          ]
+        },
+        "options": {
+          "orderBy": [
+            {
+              "column": "floor",
+              "direction": "ASC"
+            }
+          ],
+          "limit": 1
+        }
+      },
+      "id": "room-assignment",
+      "name": "PostgreSQL — Room Assignment",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1560, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Algoritmo assegnazione camera: seleziona la prima camera disponibile del tipo richiesto, ottimizzando per piano (riempimento bottom-up per efficienza housekeeping)."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.HOTEL_EMAIL_FROM}}",
+        "toEmail": "={{$node['Webhook — New Booking'].json.guest_email}}",
+        "subject": "Benvenuto/a a Hotel Cruise Como — Prenotazione Confermata #{{$node['Normalize Booking Data'].json.booking_ref}}",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;color:#333;max-width:600px;margin:0 auto'>\n<div style='background:#1a3a5c;padding:30px;text-align:center'>\n  <h1 style='color:white;margin:0'>Hotel Cruise Como</h1>\n  <p style='color:#a8c5e8;margin:5px 0'>Lago di Como — Eleganza sul lago</p>\n</div>\n<div style='padding:30px'>\n  <h2>Ciao {{$node['Webhook — New Booking'].json.guest_name.split(' ')[0]}}! 👋</h2>\n  <p>La tua prenotazione è <strong>confermata</strong>. Non vediamo l'ora di accoglierti!</p>\n  <div style='background:#f0f4f8;border-radius:8px;padding:20px;margin:20px 0'>\n    <h3 style='margin-top:0;color:#1a3a5c'>📋 Dettagli Prenotazione</h3>\n    <p><strong>Riferimento:</strong> {{$node['Normalize Booking Data'].json.booking_ref}}</p>\n    <p><strong>Check-in:</strong> {{$node['Webhook — New Booking'].json.checkin_date}} dalle 14:00</p>\n    <p><strong>Check-out:</strong> {{$node['Webhook — New Booking'].json.checkout_date}} entro le 11:00</p>\n    <p><strong>Camera:</strong> {{$node['Webhook — New Booking'].json.room_type}} — Stanza {{$node['PostgreSQL — Room Assignment'].json.room_number}}</p>\n    <p><strong>Notti:</strong> {{$node['Normalize Booking Data'].json.nights}}</p>\n  </div>\n  <div style='background:#e8f4e8;border-radius:8px;padding:20px;margin:20px 0'>\n    <h3 style='margin-top:0;color:#2d6a2d'>📱 Check-in Digitale</h3>\n    <p>Compila il <a href='https://checkin.hotelcruisecomo.it?ref={{$node[\"Normalize Booking Data\"].json.booking_ref}}' style='color:#1a3a5c'>modulo pre check-in online</a> per evitare attese alla reception!</p>\n  </div>\n  <div style='background:#fff3e0;border-radius:8px;padding:20px;margin:20px 0'>\n    <h3 style='margin-top:0;color:#e65100'>🌊 Attività sul Lago</h3>\n    <p>Vuoi prenotare un tour del Lago di Como, una cena romantica o un transfer dall'aeroporto? Rispondici direttamente a questa email o scrivici su WhatsApp!</p>\n  </div>\n  <p>A presto,<br><strong>Il Team di Hotel Cruise Como</strong></p>\n  <p style='color:#666;font-size:12px'>📍 Via Regina 28, Como | 📞 +39 031 XXX XXX | 🌐 hotelcruisecomo.it</p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "welcome-email",
+      "name": "SendGrid — Welcome Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1780, 260],
+      "credentials": {
+        "smtp": {
+          "id": "sendgrid-hotel-cruise",
+          "name": "SendGrid Hotel Cruise"
+        }
+      },
+      "notes": "Email di benvenuto HTML personalizzata con: ref prenotazione, dettagli camera assegnata, link check-in digitale, upselling attività. Segue brand identity Hotel Cruise."
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "housekeeping_tasks",
+        "columns": "room_number,task_type,checkin_date,special_notes,dietary_restrictions,priority,assigned_to,status,created_at",
+        "additionalFields": {}
+      },
+      "id": "housekeeping-checklist",
+      "name": "PostgreSQL — Housekeeping Checklist",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1780, 420],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Crea task housekeeping per il giorno di arrivo: preparazione camera, note speciali (allergie, dieta, culla, extra towels), priorità basata su ora check-in stimata."
+    },
+    {
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_STAFF_CHAT_ID}}",
+        "text": "🏨 NUOVA PRENOTAZIONE\n\n👤 {{$node['Webhook — New Booking'].json.guest_name}}\n📅 Check-in: {{$node['Webhook — New Booking'].json.checkin_date}}\n📅 Check-out: {{$node['Webhook — New Booking'].json.checkout_date}}\n🛏 Camera {{$node['PostgreSQL — Room Assignment'].json.room_number}} ({{$node['Webhook — New Booking'].json.room_type}})\n🌐 Fonte: {{$node['Normalize Booking Data'].json.normalized_source}}\n💰 Totale: €{{$node['Webhook — New Booking'].json.total_amount}}\n📋 Ref: {{$node['Normalize Booking Data'].json.booking_ref}}\n\n{{$node['Webhook — New Booking'].json.special_requests ? '⚠️ Richieste speciali: ' + $node['Webhook - New Booking'].json.special_requests : ''}}",
+        "additionalFields": {}
+      },
+      "id": "notify-staff-new-booking",
+      "name": "Telegram — Staff Booking Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1780, 580],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-hotel-cruise-staff",
+          "name": "Telegram Bot Hotel Cruise Staff"
+        }
+      },
+      "notes": "Notifica immediata al gruppo staff su ogni nuova prenotazione: dati chiave, camera assegnata, eventuali richieste speciali."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hotel-cruise-checkin",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-checkin",
+      "name": "Webhook — Check-in Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 700],
+      "notes": "Trigger da sistema PMS o app reception quando ospite effettua check-in. Payload: { booking_ref, room_number, checkin_timestamp, guest_id }"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "bookings",
+        "updateKey": "booking_ref",
+        "columns": "status,actual_checkin_time,updated_at",
+        "additionalFields": {}
+      },
+      "id": "update-status-checkin",
+      "name": "PostgreSQL — Update Status CHECKED_IN",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 700],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Aggiorna status prenotazione a CHECKED_IN e registra timestamp effettivo."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "rooms",
+        "updateKey": "room_number",
+        "columns": "status,current_guest_id,updated_at",
+        "additionalFields": {}
+      },
+      "id": "update-room-occupied",
+      "name": "PostgreSQL — Room Status OCCUPIED",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [680, 700],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Imposta camera come OCCUPIED con riferimento al guest_id corrente."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hotel-cruise-checkout",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-checkout",
+      "name": "Webhook — Checkout Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 940],
+      "notes": "Trigger su checkout. Payload: { booking_ref, guest_id, room_number, checkout_timestamp, final_amount }"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "bookings",
+        "updateKey": "booking_ref",
+        "columns": "status,actual_checkout_time,final_amount,updated_at",
+        "additionalFields": {}
+      },
+      "id": "update-status-checkout",
+      "name": "PostgreSQL — Update Status CHECKED_OUT",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 940],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Chiude la prenotazione, registra checkout timestamp e importo finale."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "rooms",
+        "updateKey": "room_number",
+        "columns": "status,current_guest_id,needs_cleaning,updated_at",
+        "additionalFields": {}
+      },
+      "id": "update-room-cleaning",
+      "name": "PostgreSQL — Room NEEDS_CLEANING",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [680, 940],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Imposta camera come NEEDS_CLEANING per trigger housekeeping."
+    },
+    {
+      "parameters": {
+        "unit": "hours",
+        "amount": 2
+      },
+      "id": "wait-post-checkout",
+      "name": "Wait 2h Post-Checkout",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [900, 940],
+      "notes": "Attende 2 ore dal checkout prima di inviare email post-soggiorno (non troppo immediata, non troppo in ritardo)."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.HOTEL_EMAIL_FROM}}",
+        "toEmail": "={{$node['Webhook — Checkout Event'].json.guest_email}}",
+        "subject": "Grazie per aver scelto Hotel Cruise Como — A presto! 🌊",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;color:#333;max-width:600px;margin:0 auto'>\n<div style='background:#1a3a5c;padding:30px;text-align:center'>\n  <h1 style='color:white;margin:0'>Hotel Cruise Como</h1>\n</div>\n<div style='padding:30px'>\n  <h2>È stato un piacere ospitarti! 🙏</h2>\n  <p>Speriamo che il tuo soggiorno sia stato indimenticabile. Il Lago di Como ti aspetta di nuovo!</p>\n  <div style='background:#f0f4f8;border-radius:8px;padding:20px;margin:20px 0'>\n    <h3 style='color:#1a3a5c'>⭐ La tua opinione conta</h3>\n    <p>Lasciaci una recensione su <a href='https://www.booking.com/hotel/it/cruise-como.html'>Booking.com</a> o <a href='https://g.page/hotelcruisecomo'>Google</a> — ci aiuta moltissimo!</p>\n  </div>\n  <div style='background:#fff3e0;border-radius:8px;padding:20px;margin:20px 0'>\n    <h3 style='color:#e65100'>🎁 Offerta Fedeltà</h3>\n    <p>Per il tuo prossimo soggiorno: <strong>10% di sconto</strong> prenotando direttamente sul nostro sito con codice <strong>CRUISE-RETURN</strong></p>\n  </div>\n  <p>A presto,<br><strong>Il Team di Hotel Cruise Como</strong></p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "post-checkout-email",
+      "name": "SendGrid — Post-Checkout Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1120, 940],
+      "credentials": {
+        "smtp": {
+          "id": "sendgrid-hotel-cruise",
+          "name": "SendGrid Hotel Cruise"
+        }
+      },
+      "notes": "Email post-soggiorno: ringraziamento + invito recensione + codice sconto fidelizzazione. Inviata 2h dopo checkout."
+    }
+  ],
+  "connections": {
+    "Webhook — New Booking": {
+      "main": [[{ "node": "Normalize Booking Data", "type": "main", "index": 0 }]]
+    },
+    "Normalize Booking Data": {
+      "main": [[{ "node": "PostgreSQL — Check Existing Guest", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Check Existing Guest": {
+      "main": [[{ "node": "Guest Exists?", "type": "main", "index": 0 }]]
+    },
+    "Guest Exists?": {
+      "main": [
+        [{ "node": "PostgreSQL — Update Repeat Guest", "type": "main", "index": 0 }],
+        [{ "node": "PostgreSQL — Insert New Guest", "type": "main", "index": 0 }]
+      ]
+    },
+    "PostgreSQL — Update Repeat Guest": {
+      "main": [[{ "node": "PostgreSQL — Insert Booking", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Insert New Guest": {
+      "main": [[{ "node": "PostgreSQL — Insert Booking", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Insert Booking": {
+      "main": [[{ "node": "PostgreSQL — Room Assignment", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Room Assignment": {
+      "main": [
+        [{ "node": "SendGrid — Welcome Email", "type": "main", "index": 0 }],
+        [{ "node": "PostgreSQL — Housekeeping Checklist", "type": "main", "index": 0 }],
+        [{ "node": "Telegram — Staff Booking Alert", "type": "main", "index": 0 }]
+      ]
+    },
+    "Webhook — Check-in Event": {
+      "main": [[{ "node": "PostgreSQL — Update Status CHECKED_IN", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Update Status CHECKED_IN": {
+      "main": [[{ "node": "PostgreSQL — Room Status OCCUPIED", "type": "main", "index": 0 }]]
+    },
+    "Webhook — Checkout Event": {
+      "main": [[{ "node": "PostgreSQL — Update Status CHECKED_OUT", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Update Status CHECKED_OUT": {
+      "main": [[{ "node": "PostgreSQL — Room NEEDS_CLEANING", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Room NEEDS_CLEANING": {
+      "main": [[{ "node": "Wait 2h Post-Checkout", "type": "main", "index": 0 }]]
+    },
+    "Wait 2h Post-Checkout": {
+      "main": [[{ "node": "SendGrid — Post-Checkout Email", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": ["hospitality", "booking", "automation", "hotel-cruise", "crm", "housekeeping"],
+  "triggerCount": 3,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1.0.0"
+}
