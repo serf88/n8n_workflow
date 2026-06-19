@@ -1,0 +1,339 @@
+{
+  "name": "Hotel Cruise Como — CRM Ospiti & Upselling Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-daily",
+      "name": "Cron — Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Trigger giornaliero ore 9:00. Avvia scansione CRM per: birthday/anniversary oggi, ospiti inattivi, segmentazione aggiornata."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT g.*, \n  CASE \n    WHEN total_stays >= 5 THEN 'VIP'\n    WHEN total_stays >= 2 THEN 'regular'\n    WHEN total_stays = 1 AND last_stay_date > NOW() - INTERVAL '6 months' THEN 'one_time_active'\n    WHEN total_stays >= 1 AND last_stay_date < NOW() - INTERVAL '6 months' THEN 'churned'\n    ELSE 'prospect'\n  END as segment,\n  EXTRACT(YEAR FROM AGE(birthday)) as age,\n  DATE_PART('day', birthday - NOW()) as days_to_birthday,\n  DATE_PART('day', anniversary - NOW()) as days_to_anniversary\nFROM guests g\nWHERE active = true\nORDER BY total_stays DESC",
+        "options": {}
+      },
+      "id": "query-all-guests",
+      "name": "PostgreSQL — Query & Segment All Guests",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Query principale: recupera tutti gli ospiti con segmentazione dinamica calcolata. Segmenti: VIP (5+ soggiorni), regular (2-4), one_time_active, churned (>6 mesi inattivo), prospect."
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-guests",
+      "name": "Split In Batches — Per Guest",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "notes": "Processa un ospite alla volta per applicare logica personalizzata e inviare comunicazioni."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json[\"days_to_birthday\"]}}",
+              "operation": "smallerEqual",
+              "value2": 7
+            },
+            {
+              "value1": "={{$json[\"days_to_birthday\"]}}",
+              "operation": "largerEqual",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "check-birthday",
+      "name": "Birthday Within 7 Days?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 180],
+      "notes": "Se il compleanno è entro 7 giorni, invia offerta personalizzata birthday."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.HOTEL_EMAIL_FROM}}",
+        "toEmail": "={{$json[\"email\"]}}",
+        "subject": "🎂 Buon Compleanno {{$json[\"first_name\"]}}! Un regalo da Hotel Cruise Como",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto'>\n<div style='background:linear-gradient(135deg,#1a3a5c,#2980b9);padding:40px;text-align:center'>\n  <h1 style='color:white'>🎂 Buon Compleanno, {{$json[\"first_name\"]}}!</h1>\n</div>\n<div style='padding:30px'>\n  <p>Tutto il team di Hotel Cruise Como ti augura un meraviglioso compleanno!</p>\n  <div style='background:#fff8e1;border-radius:8px;padding:20px;margin:20px 0;text-align:center'>\n    <h2 style='color:#e65100'>🎁 Il tuo regalo di compleanno</h2>\n    <p style='font-size:24px;font-weight:bold;color:#1a3a5c'>15% DI SCONTO</p>\n    <p>Sul tuo prossimo soggiorno a Hotel Cruise Como</p>\n    <p>Codice: <strong>BDAY-{{$json[\"id\"]}}-{{$now.toFormat('yyyy')}}</strong></p>\n    <p style='color:#666;font-size:12px'>Valido 60 giorni dalla data di nascita</p>\n  </div>\n  <p>Festeggiate sul lago più bello del mondo! 🌊</p>\n  <p>Con affetto,<br><strong>Hotel Cruise Como</strong></p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "birthday-email",
+      "name": "SendGrid — Birthday Offer Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1120, 120],
+      "credentials": {
+        "smtp": {
+          "id": "sendgrid-hotel-cruise",
+          "name": "SendGrid Hotel Cruise"
+        }
+      },
+      "notes": "Email birthday personalizzata con codice sconto univoco (ID ospite + anno). Sconto 15%, validità 60 giorni."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"segment\"]}}",
+              "operation": "equal",
+              "value2": "churned"
+            }
+          ]
+        }
+      },
+      "id": "check-churned",
+      "name": "Churned Guest?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 380],
+      "notes": "Ospite non torna da >6 mesi → recovery campaign."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.HOTEL_EMAIL_FROM}}",
+        "toEmail": "={{$json[\"email\"]}}",
+        "subject": "{{$json[\"first_name\"]}}, il Lago di Como ti aspetta 🌊 — Offerta Speciale",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto'>\n<div style='background:#1a3a5c;padding:30px;text-align:center'>\n  <h1 style='color:white'>Hotel Cruise Como</h1>\n</div>\n<div style='padding:30px'>\n  <p>Ciao {{$json[\"first_name\"]}},</p>\n  <p>Ci manchi! Sono passati alcuni mesi dal tuo soggiorno e vorremmo rivederti sul Lago di Como.</p>\n  <div style='background:#e8f5e9;border-radius:8px;padding:20px;margin:20px 0;text-align:center'>\n    <h2 style='color:#2e7d32'>🎯 Offerta Riservata a Te</h2>\n    <p style='font-size:20px;font-weight:bold'>12% DI SCONTO + UPGRADE GRATUITO</p>\n    <p>Se disponibile al momento del check-in</p>\n    <p>Codice: <strong>COMEBACK-{{$json[\"id\"]}}</strong></p>\n    <p style='color:#666;font-size:12px'>Offerta valida 30 giorni</p>\n  </div>\n  <p>Ti aspettiamo!</p>\n  <p><strong>Il Team Hotel Cruise Como</strong></p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "recovery-email",
+      "name": "SendGrid — Recovery Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1120, 320],
+      "credentials": {
+        "smtp": {
+          "id": "sendgrid-hotel-cruise",
+          "name": "SendGrid Hotel Cruise"
+        }
+      },
+      "notes": "Recovery email per ospiti inattivi: sconto 12% + upgrade gratuito (se disponibile). Codice personalizzato per tracking conversioni."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"segment\"]}}",
+              "operation": "equal",
+              "value2": "VIP"
+            }
+          ]
+        }
+      },
+      "id": "check-vip",
+      "name": "VIP Guest?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 560],
+      "notes": "Ospiti VIP (5+ soggiorni): upselling premium (suite, dinner package, spa privata)."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.HOTEL_EMAIL_FROM}}",
+        "toEmail": "={{$json[\"email\"]}}",
+        "subject": "{{$json[\"first_name\"]}}, un'esperienza esclusiva ti aspetta a Hotel Cruise 🏆",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto'>\n<div style='background:linear-gradient(135deg,#1a3a5c,#c9a227);padding:40px;text-align:center'>\n  <h1 style='color:white'>Hotel Cruise Como</h1>\n  <p style='color:#ffd700'>✨ Ospite VIP — Esperienza Esclusiva</p>\n</div>\n<div style='padding:30px'>\n  <p>Caro/a {{$json[\"first_name\"]}},</p>\n  <p>Come uno dei nostri ospiti più fedeli, abbiamo preparato qualcosa di speciale per te.</p>\n  <div style='background:#fafafa;border:2px solid #c9a227;border-radius:8px;padding:20px;margin:20px 0'>\n    <h2 style='color:#c9a227'>🏆 Lake Suite Experience</h2>\n    <ul style='line-height:2'>\n      <li>Suite Superior con vista lago</li>\n      <li>Cena romantica privata sul pontile</li>\n      <li>SPA privata per 2 persone (2h)</li>\n      <li>Tour privato del Lago in barca</li>\n      <li>Colazione in camera ogni mattina</li>\n    </ul>\n    <p style='text-align:center;font-size:18px;font-weight:bold;color:#1a3a5c'>Package da €450/notte — Riservato VIP</p>\n  </div>\n  <p>Prenota entro 10 giorni per confermare la disponibilità.</p>\n  <p>Con stima,<br><strong>La Direzione — Hotel Cruise Como</strong></p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "vip-upselling-email",
+      "name": "SendGrid — VIP Upselling Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1120, 500],
+      "credentials": {
+        "smtp": {
+          "id": "sendgrid-hotel-cruise",
+          "name": "SendGrid Hotel Cruise"
+        }
+      },
+      "notes": "Upselling premium per ospiti VIP: Lake Suite Experience con package completo. Trigger mensile se non c'è prenotazione attiva."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": "public",
+        "table": "guests",
+        "updateKey": "id",
+        "columns": "segment,loyalty_points,last_email_sent,updated_at",
+        "additionalFields": {}
+      },
+      "id": "update-guest-segment",
+      "name": "PostgreSQL — Update Segment & Points",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1340, 380],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Aggiorna: segmento ospite, punti loyalty accumulati (10 punti/notte, 50 punti/referral, 20 punti/recensione), data ultimo contatto email."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hotel-cruise-loyalty",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-loyalty",
+      "name": "Webhook — Loyalty Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 700],
+      "notes": "Riceve eventi loyalty: notte completata, referral, recensione pubblicata. Payload: { guest_id, event_type, points_earned, source }"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE guests SET \n  loyalty_points = loyalty_points + {{$json[\"points_earned\"]}},\n  updated_at = NOW()\nWHERE id = {{$json[\"guest_id\"]}}\nRETURNING id, first_name, email, loyalty_points, \n  CASE WHEN loyalty_points >= 500 THEN 'GOLD'\n       WHEN loyalty_points >= 200 THEN 'SILVER'\n       ELSE 'STANDARD' END as loyalty_tier",
+        "options": {}
+      },
+      "id": "update-loyalty-points",
+      "name": "PostgreSQL — Add Loyalty Points",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [460, 700],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-hotel-cruise",
+          "name": "PostgreSQL Hotel Cruise"
+        }
+      },
+      "notes": "Aggiunge punti loyalty e restituisce tier aggiornato: STANDARD (<200pt), SILVER (200-499pt), GOLD (500+pt)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json[\"loyalty_points\"]}}",
+              "operation": "largerEqual",
+              "value2": 200
+            }
+          ]
+        }
+      },
+      "id": "check-tier-upgrade",
+      "name": "Tier Upgrade?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 700],
+      "notes": "Se l'ospite ha superato soglia tier, invia email di congratulazioni con benefit sbloccati."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.HOTEL_EMAIL_FROM}}",
+        "toEmail": "={{$json[\"email\"]}}",
+        "subject": "🏅 Complimenti {{$json[\"first_name\"]}}! Sei diventato ospite {{$json[\"loyalty_tier\"]}} di Hotel Cruise",
+        "emailType": "html",
+        "message": "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto'>\n<div style='background:#1a3a5c;padding:30px;text-align:center'>\n  <h1 style='color:white'>🏅 Nuovo Livello Raggiunto!</h1>\n  <p style='color:#ffd700;font-size:24px;font-weight:bold'>{{$json[\"loyalty_tier\"]}}</p>\n</div>\n<div style='padding:30px'>\n  <p>Ciao {{$json[\"first_name\"]}},</p>\n  <p>Grazie per la tua fedeltà! Hai raggiunto il livello <strong>{{$json[\"loyalty_tier\"]}}</strong> con <strong>{{$json[\"loyalty_points\"]}} punti</strong>.</p>\n  <div style='background:#f0f4f8;border-radius:8px;padding:20px'>\n    <h3>I tuoi nuovi benefit:</h3>\n    <ul style='line-height:2'>\n      <li>✅ Check-in prioritario</li>\n      <li>✅ Late checkout gratuito (fino alle 13:00)</li>\n      <li>✅ Welcome drink al bar incluso</li>\n      <li>✅ Accesso anticipato alle offerte esclusive</li>\n    </ul>\n  </div>\n  <p><strong>Il Team Hotel Cruise Como</strong></p>\n</div>\n</body></html>",
+        "options": {}
+      },
+      "id": "loyalty-tier-email",
+      "name": "SendGrid — Loyalty Tier Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [900, 620],
+      "credentials": {
+        "smtp": {
+          "id": "sendgrid-hotel-cruise",
+          "name": "SendGrid Hotel Cruise"
+        }
+      },
+      "notes": "Email congratulazioni per upgrade tier loyalty. Lista benefit sbloccati per livello SILVER/GOLD."
+    }
+  ],
+  "connections": {
+    "Cron — Daily 09:00": {
+      "main": [[{ "node": "PostgreSQL — Query & Segment All Guests", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Query & Segment All Guests": {
+      "main": [[{ "node": "Split In Batches — Per Guest", "type": "main", "index": 0 }]]
+    },
+    "Split In Batches — Per Guest": {
+      "main": [
+        [{ "node": "Birthday Within 7 Days?", "type": "main", "index": 0 }],
+        [{ "node": "Churned Guest?", "type": "main", "index": 0 }],
+        [{ "node": "VIP Guest?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Birthday Within 7 Days?": {
+      "main": [
+        [{ "node": "SendGrid — Birthday Offer Email", "type": "main", "index": 0 }],
+        [{ "node": "PostgreSQL — Update Segment & Points", "type": "main", "index": 0 }]
+      ]
+    },
+    "Churned Guest?": {
+      "main": [
+        [{ "node": "SendGrid — Recovery Email", "type": "main", "index": 0 }],
+        [{ "node": "PostgreSQL — Update Segment & Points", "type": "main", "index": 0 }]
+      ]
+    },
+    "VIP Guest?": {
+      "main": [
+        [{ "node": "SendGrid — VIP Upselling Email", "type": "main", "index": 0 }],
+        [{ "node": "PostgreSQL — Update Segment & Points", "type": "main", "index": 0 }]
+      ]
+    },
+    "SendGrid — Birthday Offer Email": {
+      "main": [[{ "node": "PostgreSQL — Update Segment & Points", "type": "main", "index": 0 }]]
+    },
+    "SendGrid — Recovery Email": {
+      "main": [[{ "node": "PostgreSQL — Update Segment & Points", "type": "main", "index": 0 }]]
+    },
+    "SendGrid — VIP Upselling Email": {
+      "main": [[{ "node": "PostgreSQL — Update Segment & Points", "type": "main", "index": 0 }]]
+    },
+    "Webhook — Loyalty Event": {
+      "main": [[{ "node": "PostgreSQL — Add Loyalty Points", "type": "main", "index": 0 }]]
+    },
+    "PostgreSQL — Add Loyalty Points": {
+      "main": [[{ "node": "Tier Upgrade?", "type": "main", "index": 0 }]]
+    },
+    "Tier Upgrade?": {
+      "main": [
+        [{ "node": "SendGrid — Loyalty Tier Email", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": ["hospitality", "crm", "upselling", "loyalty", "hotel-cruise", "email-automation"],
+  "triggerCount": 2,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1.0.0"
+}
